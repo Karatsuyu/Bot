@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Entidades | Ame Bot{% endblock %}
+
+{% block content %}
+<div class="mb-8">
+    <h1 class="text-3xl font-bold text-slate-900 border-b pb-4 border-slate-200">
+        Entidades Gestionadas
+        <span class="text-sm font-normal text-slate-500 float-right mt-2 bg-slate-100 px-3 py-1 rounded-full">{{ entities|length }} totales</span>
+    </h1>
+</div>
+
+<div class="bg-white rounded-xl shadow-md border border-slate-200 overflow-hidden">
+    <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-slate-200">
+            <thead class="bg-slate-50">
+                <tr>
+                    <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Tipo / ID</th>
+                    <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Nombre</th>
+                    <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Privacidad</th>
+                    <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Enlace</th>
+                    <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Categoría</th>
+                    <th scope="col" class="px-6 py-4 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Última Vez</th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-slate-200">
+                {% for entity in entities %}
+                <tr class="hover:bg-slate-50 transition-colors">
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="flex flex-col">
+                            {% if entity.entity_type == 'channel' %}
+                                <span class="text-sky-600 font-semibold flex items-center gap-2"><i class="fa-solid fa-bullhorn text-xs"></i> Canal</span>
+                            {% elif entity.entity_type == 'group' %}
+                                <span class="text-blue-600 font-semibold flex items-center gap-2"><i class="fa-solid fa-users text-xs"></i> Grupo</span>
+                            {% else %}
+                                <span class="text-indigo-600 font-semibold flex items-center gap-2"><i class="fa-solid fa-robot text-xs"></i> Bot</span>
+                            {% endif %}
+                            <span class="text-xs text-slate-500 mt-1 font-mono">{{ entity.telegram_id }}</span>
+                        </div>
+                    </td>
+                    <td class="px-6 py-4">
+                        <div class="flex items-center">
+                            <div>
+                                <div class="text-sm font-medium text-slate-900">{{ entity.title or "Sin título" }}</div>
+                                {% if entity.username %}
+                                <div class="text-sm text-slate-500 hover:text-indigo-600 transition-colors">
+                                    <a href="https://t.me/{{ entity.username }}" target="_blank">@{{ entity.username }}</a>
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        {% if entity.is_private %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                            <i class="fa-solid fa-lock mr-1"></i> Privado
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                            <i class="fa-solid fa-unlock mr-1"></i> Público
+                        </span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        {% if entity.invite_link %}
+                            <a href="{{ entity.invite_link }}" target="_blank" class="text-indigo-600 hover:text-indigo-900 text-sm font-medium flex items-center gap-1">
+                                <i class="fa-solid fa-link text-xs"></i> Abrir
+                            </a>
+                        {% else %}
+                            <span class="text-slate-400 text-sm italic">Sin enlace</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
+                        <span class="bg-slate-100 text-slate-700 px-2 py-1 rounded text-xs">{{ entity.category }}</span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm text-slate-400">
+                        {{ entity.last_seen.strftime('%Y-%m-%d %H:%M') if entity.last_seen else 'N/A' }}
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="6" class="px-6 py-10 text-center text-slate-500 text-sm">
+                        <div class="flex flex-col items-center justify-center">
+                            <i class="fa-solid fa-folder-open text-4xl text-slate-300 mb-3"></i>
+                            <p>No se han encontrado entidades registradas aún.</p>
+                            <p class="text-xs mt-1">Usa el userbot para escanear grupos.</p>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

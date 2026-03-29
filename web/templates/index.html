@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Dashboard | Ame Bot{% endblock %}
+
+{% block content %}
+<div class="mb-8 flex items-center justify-between">
+    <div>
+        <h1 class="text-3xl font-bold text-slate-900">Panel de Control</h1>
+        <p class="text-slate-500 mt-1">Resumen general del estado del sistema y entidades gestionadas.</p>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+    <!-- Card 1 -->
+    <div class="glass rounded-xl p-6 flex flex-col items-center justify-center hover-elevate">
+        <div class="text-indigo-500 mb-3 bg-indigo-50 p-4 rounded-full"><i class="fa-solid fa-layer-group fa-2x"></i></div>
+        <h3 class="text-slate-500 font-semibold uppercase tracking-wider text-xs">Entidades Totales</h3>
+        <p class="text-4xl font-bold text-slate-800 mt-2">{{ total_entities }}</p>
+    </div>
+
+    <!-- Card 2 -->
+    <div class="glass rounded-xl p-6 flex flex-col items-center justify-center hover-elevate">
+        <div class="text-blue-500 mb-3 bg-blue-50 p-4 rounded-full"><i class="fa-solid fa-users fa-2x"></i></div>
+        <h3 class="text-slate-500 font-semibold uppercase tracking-wider text-xs">Grupos Detectados</h3>
+        <p class="text-4xl font-bold text-slate-800 mt-2">{{ groups }}</p>
+    </div>
+
+    <!-- Card 3 -->
+    <div class="glass rounded-xl p-6 flex flex-col items-center justify-center hover-elevate">
+        <div class="text-sky-500 mb-3 bg-sky-50 p-4 rounded-full"><i class="fa-solid fa-bullhorn fa-2x"></i></div>
+        <h3 class="text-slate-500 font-semibold uppercase tracking-wider text-xs">Canales Detectados</h3>
+        <p class="text-4xl font-bold text-slate-800 mt-2">{{ channels }}</p>
+    </div>
+
+    <!-- Card 4 -->
+    <div class="glass rounded-xl p-6 flex flex-col items-center justify-center hover-elevate">
+        <div class="text-emerald-500 mb-3 bg-emerald-50 p-4 rounded-full"><i class="fa-solid fa-box-archive fa-2x"></i></div>
+        <h3 class="text-slate-500 font-semibold uppercase tracking-wider text-xs">Backups Activos</h3>
+        <p class="text-4xl font-bold text-slate-800 mt-2">{{ active_backups }}</p>
+    </div>
+</div>
+
+<div class="mt-12 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+    <div class="px-6 py-5 border-b border-slate-200 bg-slate-50">
+        <h3 class="text-lg font-medium text-slate-900">Información del Sistema</h3>
+    </div>
+    <div class="p-6">
+        <div class="flex items-center space-x-3 text-sm text-slate-600 mb-3">
+            <i class="fa-solid fa-circle-check text-emerald-500"></i>
+            <span><strong>Conexión a Base de Datos:</strong> Activa y sincronizada.</span>
+        </div>
+        <div class="flex items-center space-x-3 text-sm text-slate-600 mb-3">
+            <i class="fa-solid fa-clock text-blue-500"></i>
+            <span><strong>Procesos en Segundo Plano:</strong> Ejecutándose a través de Telegram Userbot (Watchers).</span>
+        </div>
+        <p class="text-sm text-slate-500 mt-6 bg-slate-50 p-4 rounded border border-slate-100 italic">
+            Nota: Cualquier cambio realizado desde este panel actualizará directamente la base de datos PostgreSQL, 
+            y los bots (Ame Bot y Userbot) reaccionarán de manera automática a la configuración especificada.
+        </p>
+    </div>
+</div>
+{% endblock %}
