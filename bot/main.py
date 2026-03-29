@@ -17,6 +17,8 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="scan", description="🔍 Escanear grupos"),
         BotCommand(command="scanchat", description="🔍 Escanear un chat concreto"),
         BotCommand(command="addlink", description="➕ Agregar enlace"),
+        BotCommand(command="unir_guardados", description="🔗 Unirse a enlaces guardados"),
+        BotCommand(command="escanear_y_unir", description="🔍 Escanear y unir a enlaces"),
         BotCommand(command="backup_lista", description="📦 Lista de grupos para backup"),
         BotCommand(command="backup_activar", description="✅ Activar backup"),
         BotCommand(command="backup_desactivar", description="❌ Desactivar backup"),

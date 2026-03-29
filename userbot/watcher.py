@@ -493,12 +493,13 @@ def register_handlers(client):
             await asyncio.sleep(10)
 
     async def start_background_tasks():
-        """Inicia todas las tareas en segundo plano"""
+        """Inicia todas las tareas en segundo plano (excluye process_pending_joins para evitar unión automática)"""
         await asyncio.sleep(5)
         client.loop.create_task(process_pending_backups())
         client.loop.create_task(process_historial_requests())
-        client.loop.create_task(process_pending_joins())
-    
+        # NOTA: process_pending_joins NO se inicia automáticamente para evitar bans
+        # Se debe llamar manualmente desde el bot de control cuando el usuario lo solicite
+
     client.loop.create_task(start_background_tasks())
 
     @client.on(events.NewMessage())

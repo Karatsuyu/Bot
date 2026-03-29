@@ -23,7 +23,9 @@ async def cmd_start(message: types.Message):
         "• /links_estado [estado] - Ver enlaces por estado (pending/joined/failed)\n"
         "• /links_resumen [ID] - Resumen global o por chat\n\n"
         "🔧 Comandos de gestión:\n"
-        "• /addlink - Agregar enlace a una entidad\n\n"
+        "• /addlink - Agregar enlace a una entidad\n"
+        "• /unir_guardados [cantidad] - Unirse a enlaces ya guardados (anti-ban)\n"
+        "• /escanear_y_unir <ID> - Escanear chat y unir automáticamente a enlaces\n\n"
         "📦 Comandos de backup:\n"
         "• /backup_lista - Ver grupos disponibles con IDs\n"
         "• /backup_activar [ID] - Activar backup automático\n"
@@ -327,6 +329,209 @@ async def cmd_joinlinks(message: types.Message):
         session.close()
 
     await message.answer(f"✅ Links procesados: {processed}")
+
+
+async def cmd_unir_guardados(message: types.Message):
+    """Comando /unir_guardados [cantidad] - Se une a enlaces ya guardados en BD con rate limiting anti-ban"""
+    client = get_userbot_client()
+    if client is None or not client.is_connected():
+        await message.answer("❌ El userbot no está conectado. Asegúrate de que run_userbot.py esté en ejecución.")
+        return
+
+    # Obtener cantidad de enlaces a procesar (default 20 para evitar bans)
+    args = message.get_args().strip()
+    limit = 20  # Default seguro para evitar bans
+    
+    if args and args.isdigit():
+        limit = int(args)
+        if limit > 50:
+            limit = 50  # Límite máximo por seguridad
+            await message.answer("⚠️ Límite máximo ajustado a 50 para evitar bans.")
+
+    from userbot.config import JOIN_DELAY_SECONDS
+    from feature.scanner.joiner import join_from_link
+    from feature.scanner.limiter import safe_delay
+    from feature.scanner.service import ensure_entity_for_chat
+
+    session, links = get_pending_links(limit=limit)
+
+    if not links:
+        session.close()
+        await message.answer("✅ No hay enlaces pendientes por procesar.")
+        return
+
+    total_links = len(links)
+    await message.answer(
+        f"🔗 Iniciando unión a {total_links} enlaces guardados...\n\n"
+        f"⏱️ Tiempo estimado: ~{total_links * JOIN_DELAY_SECONDS // 60} minutos\n"
+        f"⚠️ Este proceso es lento para evitar bans de Telegram."
+    )
+
+    processed = 0
+    success = 0
+    failed = 0
+
+    for link_obj in links:
+        # Saltar enlaces de carpetas (addlist)
+        if "addlist" in (link_obj.link or "").lower():
+            mark_link_result(session, link_obj, joined=False, failed=True)
+            failed += 1
+            processed += 1
+            continue
+
+        try:
+            await safe_delay(JOIN_DELAY_SECONDS)
+            print(f"🔗 Uniéndose a: {link_obj.link}")
+            result = await join_from_link(client, link_obj.link)
+
+            joined_chat = None
+            try:
+                if hasattr(result, 'chats') and result.chats:
+                    joined_chat = result.chats[0]
+                elif hasattr(result, 'user'):
+                    joined_chat = result.user
+            except Exception:
+                joined_chat = None
+
+            if joined_chat is not None and hasattr(joined_chat, 'id'):
+                title = getattr(joined_chat, 'title', None) or getattr(joined_chat, 'first_name', None)
+                username = getattr(joined_chat, 'username', None)
+                ensure_entity_for_chat(joined_chat.id, title, username)
+
+            mark_link_result(session, link_obj, joined=True, failed=False)
+            success += 1
+            processed += 1
+        except Exception as e:
+            mark_link_result(session, link_obj, joined=False, failed=True)
+            failed += 1
+            processed += 1
+            print(f"❌ Error al unirse desde {link_obj.link}: {str(e)[:100]}")
+
+    if processed:
+        session.commit()
+    else:
+        session.close()
+
+    await message.answer(
+        f"✅ Unión completada:\n\n"
+        f"📊 Total procesados: {processed}\n"
+        f"✅ Exitosos: {success}\n"
+        f"❌ Fallidos: {failed}"
+    )
+
+
+async def cmd_escanear_y_unir(message: types.Message):
+    """Comando /escanear_y_unir <ID> - Escanea un chat, guarda enlaces y se une automáticamente"""
+    args = message.get_args()
+    if not args:
+        await message.answer("❌ Uso: /escanear_y_unir <chat_id>")
+        return
+
+    try:
+        chat_id = int(args.strip())
+    except ValueError:
+        await message.answer("❌ El chat_id debe ser numérico")
+        return
+
+    client = get_userbot_client()
+    if client is None or not client.is_connected():
+        await message.answer("❌ El userbot no está conectado. Asegúrate de que run_userbot.py esté en ejecución.")
+        return
+
+    from userbot.config import SCAN_LIMIT_PER_RUN, JOIN_DELAY_SECONDS
+    from feature.scanner.joiner import join_from_link
+    from feature.scanner.limiter import safe_delay
+    from feature.scanner.service import ensure_entity_for_chat
+
+    # Paso 1: Escanear el chat
+    await message.answer(f"🔍 Escaneando chat {chat_id} (límite {SCAN_LIMIT_PER_RUN} mensajes)...")
+
+    try:
+        new_links_count = await scan_chat(client, chat_id, limit=SCAN_LIMIT_PER_RUN)
+        await message.answer(f"📊 Enlaces encontrados: {new_links_count}")
+
+        if new_links_count == 0:
+            await message.answer("ℹ️ No se encontraron enlaces nuevos en este chat.")
+            return
+
+        # Paso 2: Obtener los enlaces recién guardados (los últimos)
+        session = SessionLocal()
+        try:
+            recent_links = (
+                session.query(FoundLink)
+                .filter_by(processed=False, source_chat_id=chat_id)
+                .order_by(FoundLink.created_at.desc())
+                .limit(new_links_count)
+                .all()
+            )
+        finally:
+            session.close()
+
+        if not recent_links:
+            await message.answer("ℹ️ No hay enlaces pendientes para unir.")
+            return
+
+        # Paso 3: Unirse automáticamente a los enlaces encontrados
+        await message.answer(
+            f"🔗 Uniéndose automáticamente a {len(recent_links)} enlaces encontrados...\n\n"
+            f"⏱️ Esto tomará ~{len(recent_links) * JOIN_DELAY_SECONDS // 60} minutos."
+        )
+
+        processed = 0
+        success = 0
+        failed = 0
+
+        for link_obj in recent_links:
+            # Saltar enlaces de carpetas (addlist)
+            if "addlist" in (link_obj.link or "").lower():
+                mark_link_result(session, link_obj, joined=False, failed=True)
+                failed += 1
+                processed += 1
+                continue
+
+            try:
+                await safe_delay(JOIN_DELAY_SECONDS)
+                print(f"🔗 Uniéndose a: {link_obj.link}")
+                result = await join_from_link(client, link_obj.link)
+
+                joined_chat = None
+                try:
+                    if hasattr(result, 'chats') and result.chats:
+                        joined_chat = result.chats[0]
+                    elif hasattr(result, 'user'):
+                        joined_chat = result.user
+                except Exception:
+                    joined_chat = None
+
+                if joined_chat is not None and hasattr(joined_chat, 'id'):
+                    title = getattr(joined_chat, 'title', None) or getattr(joined_chat, 'first_name', None)
+                    username = getattr(joined_chat, 'username', None)
+                    ensure_entity_for_chat(joined_chat.id, title, username)
+
+                mark_link_result(session, link_obj, joined=True, failed=False)
+                success += 1
+                processed += 1
+            except Exception as e:
+                mark_link_result(session, link_obj, joined=False, failed=True)
+                failed += 1
+                processed += 1
+                print(f"❌ Error al unirse desde {link_obj.link}: {str(e)[:100]}")
+
+        if processed:
+            session.commit()
+        else:
+            session.close()
+
+        await message.answer(
+            f"✅ Escaneo y unión completada:\n\n"
+            f"📊 Total procesados: {processed}\n"
+            f"✅ Exitosos: {success}\n"
+            f"❌ Fallidos: {failed}"
+        )
+
+    except Exception as e:
+        await message.answer(f"❌ Error en /escanear_y_unir: {str(e)[:200]}")
+
 
 async def cmd_backup_lista(message: types.Message):
     """Comando /backup_lista - Lista grupos disponibles para backup"""
@@ -1111,6 +1316,8 @@ def register_handlers(dp):
     dp.message.register(cmd_scan, Command("scan"))
     dp.message.register(cmd_scanchat, Command("scanchat"))
     dp.message.register(cmd_joinlinks, Command("joinlinks"))
+    dp.message.register(cmd_unir_guardados, Command("unir_guardados"))
+    dp.message.register(cmd_escanear_y_unir, Command("escanear_y_unir"))
     dp.message.register(cmd_directorio, Command("directorio"))
     
     # Comandos de backup
