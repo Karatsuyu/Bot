@@ -54,8 +54,12 @@ async def enable_backup(client, source_chat_id):
                 'message': '❌ Primero debes escanear ese grupo con /scan'
             }
         
-        # Verificar si ya tiene backup configurado
-        existing = session.query(BackupMapping).filter_by(source_chat_id=source_chat_id).first()
+        # Verificar si ya tiene backup configurado (modo canal)
+        existing = session.query(BackupMapping).filter_by(
+            source_chat_id=source_chat_id
+        ).filter(
+            (BackupMapping.storage_mode == 'channel') | (BackupMapping.storage_mode.is_(None))
+        ).first()
         
         if existing:
             if existing.enabled:
@@ -118,7 +122,11 @@ async def disable_backup(source_chat_id):
     """
     session = SessionLocal()
     try:
-        mapping = session.query(BackupMapping).filter_by(source_chat_id=source_chat_id).first()
+        mapping = session.query(BackupMapping).filter_by(
+            source_chat_id=source_chat_id
+        ).filter(
+            (BackupMapping.storage_mode == 'channel') | (BackupMapping.storage_mode.is_(None))
+        ).first()
         
         if not mapping:
             return {
@@ -202,6 +210,8 @@ def get_dest_channel(source_chat_id):
         mapping = session.query(BackupMapping).filter_by(
             source_chat_id=source_chat_id,
             enabled=True
+        ).filter(
+            (BackupMapping.storage_mode == 'channel') | (BackupMapping.storage_mode.is_(None))
         ).first()
         
         if mapping:
@@ -221,7 +231,11 @@ def increment_message_count(source_chat_id):
     """
     session = SessionLocal()
     try:
-        mapping = session.query(BackupMapping).filter_by(source_chat_id=source_chat_id).first()
+        mapping = session.query(BackupMapping).filter_by(
+            source_chat_id=source_chat_id
+        ).filter(
+            (BackupMapping.storage_mode == 'channel') | (BackupMapping.storage_mode.is_(None))
+        ).first()
         if mapping:
             mapping.message_count += 1
             session.commit()
@@ -234,7 +248,7 @@ def increment_message_count(source_chat_id):
 async def start_historial_backup(client, source_chat_id, dest_chat_id, chat_title):
     """
     Inicia la descarga del historial completo de un grupo
-    
+
     Args:
         client: Cliente de Telethon
         source_chat_id: ID del chat origen
@@ -243,9 +257,9 @@ async def start_historial_backup(client, source_chat_id, dest_chat_id, chat_titl
     """
     count = 0
     errors = 0
-    
+
     print(f"📚 Iniciando descarga de historial: {chat_title}")
-    
+
     try:
         # Iterar por todos los mensajes con multimedia (del más antiguo al más nuevo)
         async for message in client.iter_messages(source_chat_id, limit=None, reverse=True):
@@ -257,20 +271,46 @@ async def start_historial_backup(client, source_chat_id, dest_chat_id, chat_titl
                         message
                     )
                     count += 1
-                    
+
                     # Incrementar contador en DB
                     increment_message_count(source_chat_id)
-                    
+
                     # Log cada 50 archivos
                     if count % 50 == 0:
                         print(f"📊 Progreso: {count} archivos de {chat_title}")
-                    
+
                 except Exception as e:
                     errors += 1
                     if errors == 1:
                         print(f"⚠️ Error en backup: {str(e)[:100]}")
-        
+
         print(f"✅ Historial completado: {count} archivos de {chat_title} (errores: {errors})")
-        
+
     except Exception as e:
         print(f"❌ Error fatal en backup_historial de {chat_title}: {str(e)[:200]}")
+
+
+def get_dest_topic(source_chat_id):
+    """
+    Obtiene el ID del tema destino para un chat origen si está activo en modo topic
+
+    Args:
+        source_chat_id: ID del chat origen
+
+    Returns:
+        int o None: topic_id si está activo en modo topic
+    """
+    session = SessionLocal()
+    try:
+        mapping = session.query(BackupMapping).filter_by(
+            source_chat_id=source_chat_id,
+            enabled=True,
+            storage_mode='topic'
+        ).first()
+
+        if mapping and mapping.topic_id:
+            return mapping.topic_id
+        return None
+
+    finally:
+        session.close()

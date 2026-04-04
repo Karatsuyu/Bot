@@ -8,6 +8,13 @@ from feature.scanner.models import FoundLink, LinkRule
 from userbot.main import get_client as get_userbot_client
 from bot.keyboards.pagination import directory_keyboard
 
+def _get_args(message: types.Message) -> str:
+    """Helper para obtener los argumentos de un comando en Aiogram v3."""
+    if not message.text:
+        return ""
+    parts = message.text.split(maxsplit=1)
+    return parts[1] if len(parts) > 1 else ""
+
 async def cmd_start(message: types.Message):
     """Comando /start - Mensaje de bienvenida"""
     welcome_text = (
@@ -242,7 +249,7 @@ async def cmd_scan(message: types.Message):
 
 async def cmd_scanchat(message: types.Message):
     """Comando /scanchat <chat_id> - Escanea un chat concreto usando el userbot"""
-    args = message.get_args()
+    args = _get_args(message)
     if not args:
         await message.answer("❌ Uso: /scanchat <chat_id>")
         return
@@ -339,7 +346,7 @@ async def cmd_unir_guardados(message: types.Message):
         return
 
     # Obtener cantidad de enlaces a procesar (default 20 para evitar bans)
-    args = message.get_args().strip()
+    args = _get_args(message).strip()
     limit = 20  # Default seguro para evitar bans
     
     if args and args.isdigit():
@@ -422,7 +429,7 @@ async def cmd_unir_guardados(message: types.Message):
 
 async def cmd_escanear_y_unir(message: types.Message):
     """Comando /escanear_y_unir <ID> - Escanea un chat, guarda enlaces y se une automáticamente"""
-    args = message.get_args()
+    args = _get_args(message)
     if not args:
         await message.answer("❌ Uso: /escanear_y_unir <chat_id>")
         return
@@ -603,11 +610,15 @@ async def cmd_backup_activar(message: types.Message):
                 )
                 return
             
-            # Verificar si ya tiene backup
-            existing = session.query(BackupMapping).filter_by(source_chat_id=chat_id).first()
+            # Verificar si ya tiene backup (modo canal)
+            existing = session.query(BackupMapping).filter_by(
+                source_chat_id=chat_id
+            ).filter(
+                (BackupMapping.storage_mode == 'channel') | (BackupMapping.storage_mode.is_(None))
+            ).first()
             if existing and existing.enabled:
                 await message.answer(
-                    f"⚠️ Este grupo ya tiene backup activo\n\n"
+                    f"⚠️ Este grupo ya tiene backup activo (modo canal)\n\n"
                     f"📦 Canal: {existing.dest_chat_title}\n"
                     f"📨 Archivos respaldados: {existing.message_count}"
                 )
@@ -699,6 +710,7 @@ async def cmd_backup_estado(message: types.Message):
             text += f"✅ Activos ({len(activos)}):\n\n"
             for m in activos:
                 title = (m.dest_chat_title or 'Sin título')[:40]
+                mode = m.storage_mode or 'channel'
                 
                 # Indicar si está pendiente
                 if m.dest_chat_id == 0:
@@ -706,14 +718,19 @@ async def cmd_backup_estado(message: types.Message):
                 else:
                     status = "✅ ACTIVO"
                 
-                text += f"{status} {title}\n"
+                mode_emoji = "📢" if mode == 'channel' else "📌"
+                text += f"{status} {mode_emoji} [{mode.upper()}] {title}\n"
                 text += f"   ├ ID Origen: {m.source_chat_id}\n"
                 text += f"   ├ Archivos: {m.message_count}\n"
                 
+                if mode == 'topic' and m.topic_id:
+                    text += f"   ├ Tema ID: {m.topic_id}\n"
+                
                 if m.dest_chat_id != 0:
-                    text += f"   └ Canal: {m.dest_chat_id}\n\n"
+                    dest_label = "Tema en" if mode == 'topic' else "Canal"
+                    text += f"   └ {dest_label}: {m.dest_chat_id}\n\n"
                 else:
-                    text += f"   └ El canal se está creando...\n\n"
+                    text += f"   └ El {'tema' if mode == 'topic' else 'canal'} se está creando...\n\n"
         
         if pausados:
             text += f"\n⏸️ Pausados ({len(pausados)}):\n\n"
@@ -825,11 +842,207 @@ async def cmd_backup_historial(message: types.Message):
         await message.answer(f"❌ Error: {str(e)[:200]}")
 
 
+async def cmd_backup_topic_activar(message: types.Message):
+    """Comando /backup_topic_activar [ID] - Activa backup en modo tema (supergrupo con temas)"""
+    try:
+        parts = message.text.split()
+        if len(parts) < 2:
+            await message.answer(
+                "❌ Uso incorrecto\n\n"
+                "✅ Uso correcto: /backup_topic_activar [ID]\n\n"
+                "Ejemplo: /backup_topic_activar -1001234567890\n\n"
+                "💡 Usa /backup_lista para ver los IDs disponibles"
+            )
+            return
+        
+        chat_id = int(parts[1])
+        
+        # Verificar que el grupo existe en la base de datos
+        session = SessionLocal()
+        try:
+            entity = session.query(TelegramEntity).filter_by(telegram_id=chat_id).first()
+            if not entity:
+                await message.answer(
+                    "❌ No se encontró ese grupo/canal.\n\n"
+                    "💡 Primero usa /scan en tu cuenta de Telegram\n"
+                    "💡 Luego usa /backup_lista para ver los IDs"
+                )
+                return
+            
+            # Verificar BACKUP_GROUP_ID
+            from userbot.config import BACKUP_GROUP_ID
+            if not BACKUP_GROUP_ID:
+                await message.answer(
+                    "❌ BACKUP_GROUP_ID no configurado en .env\n\n"
+                    "💡 Debes configurar un supergrupo con temas activados"
+                )
+                session.close()
+                return
+            
+            # Verificar si ya tiene backup en modo topic
+            from database.models import BackupMapping
+            existing = session.query(BackupMapping).filter_by(
+                source_chat_id=chat_id,
+                storage_mode='topic'
+            ).first()
+            
+            if existing and existing.enabled:
+                await message.answer(
+                    f"⚠️ El backup en modo tema ya está activo\n\n"
+                    f"📦 Supergrupo: {BACKUP_GROUP_ID}\n"
+                    f"📌 Tema ID: {existing.topic_id}\n"
+                    f"📨 Archivos respaldados: {existing.message_count}"
+                )
+                session.close()
+                return
+            
+            await message.answer(
+                "⏳ Activando backup en modo tema...\n\n"
+                "ℹ️ Se creará un tema en el supergrupo de backup.\n"
+                "📝 Esto puede tardar unos segundos."
+            )
+            
+            # Importar función del userbot
+            from userbot.backup_topic.service import backup_to_topic
+            from userbot.main import get_client as get_userbot_client
+            
+            userbot_client = get_userbot_client()
+            if not userbot_client or not userbot_client.is_connected():
+                await message.answer("❌ El userbot no está conectado. Asegúrate de que run_userbot.py esté en ejecución.")
+                session.close()
+                return
+            
+            # Activar backup en modo topic
+            result = await backup_to_topic(userbot_client, chat_id, entity.title)
+            
+            if result['success']:
+                await message.answer(result['message'])
+            else:
+                await message.answer(result['message'])
+            
+        finally:
+            session.close()
+        
+    except ValueError:
+        await message.answer("❌ El ID debe ser un número.\n\nEjemplo: /backup_topic_activar -1001234567890")
+    except Exception as e:
+        await message.answer(f"❌ Error: {str(e)[:200]}")
+
+
+async def cmd_backup_topic_info(message: types.Message):
+    """Comando /backup_topic_info - Información sobre backup en modo tema"""
+    from userbot.config import BACKUP_GROUP_ID, BACKUP_MODE
+    
+    info_text = (
+        "📦 **Backup en Modo Tema (Supergrupo)**\n\n"
+        "Este modo guarda los backups en **temas** dentro de un supergrupo compartido.\n\n"
+        "**Configuración actual**:\n"
+        f"• BACKUP_MODE: `{BACKUP_MODE}`\n"
+        f"• BACKUP_GROUP_ID: `{BACKUP_GROUP_ID or 'No configurado'}`\n\n"
+        "**Ventajas del modo tema**:\n"
+        "• ✅ Más organizado (un tema por grupo)\n"
+        "• ✅ Todo en un solo lugar\n"
+        "• ✅ Fácil de navegar\n"
+        "• ✅ Ideal para backups masivos\n\n"
+        "**Requisitos**:\n"
+        "1️⃣ Crear un supergrupo\n"
+        "2️⃣ Activar **Temas** en la configuración\n"
+        "3️⃣ Añadir el userbot como administrador\n"
+        "4️⃣ Configurar BACKUP_GROUP_ID en .env\n\n"
+        "**Comandos**:\n"
+        "• /backup_topic_activar [ID] - Activar backup en modo tema\n"
+        "• /backup_activar [ID] - Activar backup en modo canal (tradicional)\n"
+        "• /backup_estado - Ver todos los backups\n\n"
+        "💡 **Puedes tener ambos modos activos para el mismo grupo**"
+    )
+    await message.answer(info_text, parse_mode="Markdown")
+
+
+async def cmd_backup_topic_historial(message: types.Message):
+    """Comando /backup_topic_historial [ID] - Descarga el historial completo a un tema"""
+    try:
+        parts = message.text.split()
+        if len(parts) < 2:
+            await message.answer(
+                "❌ Uso incorrecto\n\n"
+                "✅ Uso correcto: /backup_topic_historial [ID]\n\n"
+                "Ejemplo: /backup_topic_historial -1001234567890\n\n"
+                "💡 Usa /backup_lista para ver los IDs disponibles"
+            )
+            return
+        
+        chat_id = int(parts[1])
+        
+        session = SessionLocal()
+        try:
+            entity = session.query(TelegramEntity).filter_by(telegram_id=chat_id).first()
+            if not entity:
+                await message.answer(
+                    "❌ No se encontró ese grupo/canal.\n\n"
+                    "💡 Primero usa /scan en tu cuenta de Telegram\n"
+                    "💡 Luego usa /backup_lista para ver los IDs"
+                )
+                return
+            
+            # Verificar si tiene backup activo en modo topic
+            mapping = session.query(BackupMapping).filter_by(
+                source_chat_id=chat_id,
+                enabled=True,
+                storage_mode='topic'
+            ).first()
+            
+            if not mapping or not mapping.topic_id:
+                await message.answer(
+                    f"❌ Este grupo no tiene backup activo en modo tema.\n\n"
+                    f"💡 Primero actívalo con: /backup_topic_activar {chat_id}"
+                )
+                return
+            
+            await message.answer(
+                f"⏳ Iniciando descarga del historial al tema...\n\n"
+                f"📦 Grupo: {entity.title}\n"
+                f"🆔 ID: {chat_id}\n"
+                f"📌 Tema ID: {mapping.topic_id}\n\n"
+                f"📊 Esto puede tardar varios minutos.\n"
+                f"💡 El proceso continúa en segundo plano."
+            )
+            
+            # Lanzar la descarga del historial
+            from userbot.backup_topic.service import download_historial_to_topic
+            from userbot.main import get_client as get_userbot_client
+            
+            userbot_client = get_userbot_client()
+            if not userbot_client or not userbot_client.is_connected():
+                await message.answer("❌ El userbot no está conectado.")
+                return
+            
+            import asyncio
+            asyncio.create_task(
+                download_historial_to_topic(
+                    userbot_client, chat_id, mapping.topic_id, entity.title
+                )
+            )
+            
+            await message.answer(
+                "✅ Descarga de historial iniciada\n\n"
+                "📊 El proceso continúa en segundo plano\n"
+                "💡 Recibirás notificaciones de progreso"
+            )
+            
+        finally:
+            session.close()
+        
+    except ValueError:
+        await message.answer("❌ El ID debe ser un número.\n\nEjemplo: /backup_topic_historial -1001234567890")
+    except Exception as e:
+        await message.answer(f"❌ Error: {str(e)[:200]}")
+
+
 async def cmd_links_chat(message: types.Message):
     """/links_chat <chat_id> - Ver enlaces encontrados para un chat"""
-    args = message.get_args()
+    args = _get_args(message)
     if not args:
-        await message.answer("❌ Uso: /links_chat <chat_id>")
+        await message.answer("❌ Uso: /links_chat <chat_id>\nEjemplo: /links_chat 123456789")
         return
 
     try:
@@ -870,7 +1083,8 @@ async def cmd_links_chat(message: types.Message):
 
 async def cmd_links_estado(message: types.Message):
     """/links_estado [estado] - Ver enlaces por estado (pending|joined|failed)"""
-    args = message.get_args().strip().lower() if message.get_args() else "pending"
+    args_text = _get_args(message)
+    args = args_text.strip().lower() if args_text else "pending"
 
     session = SessionLocal()
     try:
@@ -906,7 +1120,7 @@ async def cmd_links_estado(message: types.Message):
 
 async def cmd_linkrule_add(message: types.Message):
     """/linkrule_add <pattern> <whitelist|blacklist> - Añadir regla de enlaces"""
-    args = message.get_args()
+    args = _get_args(message)
     if not args:
         await message.answer(
             "❌ Uso: /linkrule_add <pattern> <whitelist|blacklist>\n"
@@ -968,12 +1182,13 @@ async def cmd_linkrule_list(message: types.Message):
 
 async def cmd_linkrule_toggle(message: types.Message):
     """/linkrule_toggle <id> - Activar/desactivar una regla"""
-    args = message.get_args()
-    if not args or not args.strip().isdigit():
+    args_text = _get_args(message)
+    args = args_text.strip() if args_text else ""
+    if not args.isdigit():
         await message.answer("❌ Uso: /linkrule_toggle <id>")
         return
 
-    rule_id = int(args.strip())
+    rule_id = int(args)
 
     session = SessionLocal()
     try:
@@ -1251,7 +1466,7 @@ async def directory_join_callback(callback: types.CallbackQuery):
 
 async def cmd_links_resumen(message: types.Message):
     """/links_resumen [chat_id] - Resumen de enlaces global o por chat"""
-    args = message.get_args().strip() if message.get_args() else ""
+    args = _get_args(message)
 
     session = SessionLocal()
     try:
@@ -1327,6 +1542,9 @@ def register_handlers(dp):
     dp.message.register(cmd_backup_estado, Command("backup_estado"))
     dp.message.register(cmd_backup_info, Command("backup_info"))
     dp.message.register(cmd_backup_historial, Command("backup_historial"))
+    dp.message.register(cmd_backup_topic_activar, Command("backup_topic_activar"))
+    dp.message.register(cmd_backup_topic_info, Command("backup_topic_info"))
+    dp.message.register(cmd_backup_topic_historial, Command("backup_topic_historial"))
     # Scanner links
     dp.message.register(cmd_links_chat, Command("links_chat"))
     dp.message.register(cmd_links_estado, Command("links_estado"))

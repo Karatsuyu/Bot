@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, BigInteger, String, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, BigInteger, String, Boolean, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
@@ -19,19 +19,23 @@ class TelegramEntity(Base):
     is_private = Column(Boolean, default=False)
     last_seen = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # Relación con BackupMapping
-    backup_config = relationship("BackupMapping", back_populates="source_entity", uselist=False)
+    # Relación con BackupMapping (puede tener múltiples: canal y topic)
+    backup_configs = relationship("BackupMapping", back_populates="source_entity")
 
     def __repr__(self):
         return f"<TelegramEntity(title='{self.title}', type='{self.entity_type}', category='{self.category}')>"
 
 
 class BackupMapping(Base):
-    """Mapeo de grupos origen → canales destino para backup automático"""
+    """Mapeo de grupos origen → canales/temas destino para backup automático"""
     __tablename__ = "backup_mappings"
-    
+
+    __table_args__ = (
+        UniqueConstraint('source_chat_id', 'storage_mode', name='uq_source_storage_mode'),
+    )
+
     id = Column(Integer, primary_key=True, autoincrement=True)
-    source_chat_id = Column(BigInteger, ForeignKey('entities.telegram_id'), unique=True, nullable=False)
+    source_chat_id = Column(BigInteger, ForeignKey('entities.telegram_id'), nullable=False)
     dest_chat_id = Column(BigInteger, nullable=False)
     dest_chat_title = Column(String, nullable=True)
     enabled = Column(Boolean, default=True)
@@ -39,8 +43,13 @@ class BackupMapping(Base):
     message_count = Column(Integer, default=0)
     historial_pending = Column(Boolean, default=False)  # Nueva columna para solicitud de historial
     
+    # Columnas para backup en modo tema (topic)
+    topic_id = Column(BigInteger, nullable=True)  # ID del tema en el supergrupo
+    storage_mode = Column(String, default='channel')  # 'channel' | 'topic'
+    last_message_id = Column(BigInteger, nullable=True)  # Para evitar duplicados en backup
+
     # Relación con TelegramEntity
-    source_entity = relationship("TelegramEntity", back_populates="backup_config")
-    
+    source_entity = relationship("TelegramEntity", back_populates="backup_configs")
+
     def __repr__(self):
-        return f"<BackupMapping(source={self.source_chat_id}, dest={self.dest_chat_id}, enabled={self.enabled})>"
+        return f"<BackupMapping(source={self.source_chat_id}, dest={self.dest_chat_id}, enabled={self.enabled}, mode={self.storage_mode})>"

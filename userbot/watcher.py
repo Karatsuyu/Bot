@@ -7,11 +7,14 @@ from database.models import TelegramEntity, BackupMapping
 from feature.scanner.models import FoundLink
 from datetime import datetime
 import asyncio
+import os
 from userbot.backup_manager import (
     get_dest_channel,
     increment_message_count
 )
-from userbot.config import SCAN_LIMIT_PER_RUN, JOIN_LIMIT_PER_RUN, JOIN_DELAY_SECONDS
+from userbot.backup_topic.service import process_pending_topic_backups
+from userbot.backup_topic.sender import forward_to_topic, send_file_to_topic, extract_file_info, _get_full_group_id, _ensure_entity_loaded
+from userbot.config import SCAN_LIMIT_PER_RUN, JOIN_LIMIT_PER_RUN, JOIN_DELAY_SECONDS, BACKUP_GROUP_ID
 from feature.scanner.service import scan_chat, get_pending_links, mark_link_result, ensure_entity_for_chat
 from feature.scanner.joiner import join_from_link
 from feature.scanner.limiter import safe_delay
@@ -497,6 +500,9 @@ def register_handlers(client):
         await asyncio.sleep(5)
         client.loop.create_task(process_pending_backups())
         client.loop.create_task(process_historial_requests())
+        # Iniciar tarea de backups pendientes en modo topic (si está configurado)
+        if BACKUP_GROUP_ID:
+            client.loop.create_task(process_pending_topic_backups(client))
         # NOTA: process_pending_joins NO se inicia automáticamente para evitar bans
         # Se debe llamar manualmente desde el bot de control cuando el usuario lo solicite
 
@@ -504,7 +510,91 @@ def register_handlers(client):
 
     @client.on(events.NewMessage())
     async def backup_media_handler(event):
-        """Escucha todos los mensajes y respalda multimedia automáticamente"""
+        """Escucha todos los mensajes y respalda multimedia automáticamente (modo canal)"""
+
+        if not event.is_group and not event.is_channel:
+            return
+        if event.message.message and event.message.message.startswith('/'):
+            return
+
+        if not event.message.media:
+            return
+
+        source_chat_id = event.chat_id
+
+        dest_chat_id = get_dest_channel(source_chat_id)
+        if not dest_chat_id:
+            return
+
+        if dest_chat_id == 0:
+            print(f"⚠️ Canal de backup aún no creado para chat {source_chat_id}")
+            return
+
+        try:
+            chat = await event.get_chat()
+            chat_title = getattr(chat, 'title', 'Grupo sin nombre')
+
+            # Obtener el canal de destino
+            dest_entity = None
+
+            # Intentar con get_entity primero (más rápido)
+            try:
+                dest_entity = await client.get_entity(dest_chat_id)
+            except:
+                # Si falla, buscar en diálogos
+                async for dialog in client.iter_dialogs():
+                    if dialog.id == dest_chat_id:
+                        dest_entity = dialog.entity
+                        break
+
+            if not dest_entity:
+                print(f"⚠️ No se encontró el canal de backup para {chat_title}")
+                return
+
+            # Intentar reenviar directamente primero
+            try:
+                await client.send_message(dest_entity, event.message)
+            except Exception as forward_error:
+                # Si falla (protección de reenvío), descargar y subir
+                if "protected chat" in str(forward_error).lower():
+                    message = event.message
+                    # Descargar archivo a bytes
+                    file_bytes = await client.download_media(message, file=bytes)
+
+                    # Obtener atributos del archivo
+                    attributes = []
+                    if message.document:
+                        attributes = message.document.attributes
+                    elif message.photo:
+                        # Para fotos, no hay atributos especiales
+                        pass
+                    elif message.video:
+                        attributes = message.video.attributes
+
+                    # Subir al canal de backup preservando atributos
+                    await client.send_file(
+                        dest_entity,
+                        file_bytes,
+                        caption=message.message if message.message else None,
+                        attributes=attributes if attributes else None,
+                        force_document=message.document is not None
+                    )
+                else:
+                    raise forward_error
+
+            increment_message_count(source_chat_id)
+
+            print(f"💾 Backup: {chat_title} → archivo guardado (canal)")
+
+        except Exception as e:
+            print(f"❌ Error en backup automático (canal): {str(e)[:100]}")
+
+    @client.on(events.NewMessage())
+    async def backup_media_topic_handler(event):
+        """Escucha todos los mensajes y respalda multimedia automáticamente (modo tema)"""
+        
+        if not BACKUP_GROUP_ID:
+            return  # No está configurado el modo tema
         
         if not event.is_group and not event.is_channel:
             return
@@ -516,71 +606,73 @@ def register_handlers(client):
         
         source_chat_id = event.chat_id
         
-        dest_chat_id = get_dest_channel(source_chat_id)
-        if not dest_chat_id:
-            return
-        
-        if dest_chat_id == 0:
-            print(f"⚠️ Canal de backup aún no creado para chat {source_chat_id}")
-            return
-        
+        # Verificar si tiene backup en modo topic
+        session = SessionLocal()
         try:
-            chat = await event.get_chat()
-            chat_title = getattr(chat, 'title', 'Grupo sin nombre')
+            mapping = session.query(BackupMapping).filter_by(
+                source_chat_id=source_chat_id,
+                enabled=True,
+                storage_mode='topic'
+            ).first()
             
-            # Obtener el canal de destino
-            dest_entity = None
-            
-            # Intentar con get_entity primero (más rápido)
-            try:
-                dest_entity = await client.get_entity(dest_chat_id)
-            except:
-                # Si falla, buscar en diálogos
-                async for dialog in client.iter_dialogs():
-                    if dialog.id == dest_chat_id:
-                        dest_entity = dialog.entity
-                        break
-            
-            if not dest_entity:
-                print(f"⚠️ No se encontró el canal de backup para {chat_title}")
+            if not mapping or not mapping.topic_id:
+                session.close()
                 return
             
-            # Intentar reenviar directamente primero
+            topic_id = mapping.topic_id
+
             try:
-                await client.send_message(dest_entity, event.message)
-            except Exception as forward_error:
-                # Si falla (protección de reenvío), descargar y subir
-                if "protected chat" in str(forward_error).lower():
+                chat = await event.get_chat()
+                chat_title = getattr(chat, 'title', 'Grupo sin nombre')
+
+                # Intentar reenvío directo al topic (rápido, sin descarga)
+                success = await forward_to_topic(
+                    client, BACKUP_GROUP_ID, topic_id, event.message, source_chat_id
+                )
+                
+                # Si necesita fallback (chat protegido contra reenvío)
+                if not success:
                     message = event.message
-                    # Descargar archivo a bytes
+                    
+                    # Descargar archivo a bytes (NO a disco)
                     file_bytes = await client.download_media(message, file=bytes)
                     
-                    # Obtener atributos del archivo
-                    attributes = []
-                    if message.document:
-                        attributes = message.document.attributes
-                    elif message.photo:
-                        # Para fotos, no hay atributos especiales
-                        pass
-                    elif message.video:
-                        attributes = message.video.attributes
-                    
-                    # Subir al canal de backup preservando atributos
-                    await client.send_file(
-                        dest_entity,
-                        file_bytes,
-                        caption=message.message if message.message else None,
-                        attributes=attributes if attributes else None,
-                        force_document=message.document is not None
-                    )
-                else:
-                    raise forward_error
-            
-            increment_message_count(source_chat_id)
-            
-            print(f"💾 Backup: {chat_title} → archivo guardado")
-            
-        except Exception as e:
-            print(f"❌ Error en backup automático: {str(e)[:100]}")
-    
-    print("✅ Handlers del userbot registrados (incluyendo backup automático)")
+                    if file_bytes:
+                        # Extraer info del archivo original para preservar formato
+                        info = extract_file_info(message)
+                        
+                        if info['is_voice']:
+                            # Notas de voz
+                            full_id = await _ensure_entity_loaded(client, BACKUP_GROUP_ID)
+                            await client.send_file(
+                                full_id,
+                                file_bytes,
+                                caption=message.message,
+                                reply_to=topic_id,
+                                voice_note=True,
+                                attributes=info['attributes']
+                            )
+                        else:
+                            # Cualquier otro archivo: usar send_file_to_topic
+                            await send_file_to_topic(
+                                client,
+                                BACKUP_GROUP_ID,
+                                topic_id,
+                                file_bytes,
+                                caption=message.message,
+                                attributes=info['attributes'],
+                                force_document=info['force_document'],
+                                mime_type=info['mime_type'],
+                                file_name=info['file_name']
+                            )
+
+                increment_message_count(source_chat_id)
+                print(f"💾 Backup: {chat_title} → archivo guardado (tema {topic_id})")
+
+            except Exception as e:
+                print(f"❌ Error en backup automático (tema): {str(e)[:100]}")
+
+        finally:
+            session.close()
+
+    print("✅ Handlers del userbot registrados (incluyendo backup automático en canal y tema)")
